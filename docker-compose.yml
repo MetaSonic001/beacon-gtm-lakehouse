@@ -1,0 +1,148 @@
+# ==============================================================================
+# Beacon GTM Lakehouse — Local Infrastructure
+# ==============================================================================
+# Everything required for the data platform runs on your laptop via Docker.
+# No cloud account needed.
+#
+#   +-----------+   +----------+   +--------------------------------------+
+#   |  MinIO    |   | Postgres |   |  Redpanda (Kafka-API)                 |
+#   | (S3 lake) |   | (serving)|   | + Redpanda Console (topic UI)         |
+#   +-----------+   +----------+   +--------------------------------------+
+#
+# Design note: Spark runs LOCALLY on your host (pip install pyspark), NOT in a
+# container. This keeps the batch jobs easy to debug while you build the
+# pipeline. Credentials here are read from your .env file (${VAR} syntax).
+# ==============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-compatible object store. This is the "data lake" storage layer:
+  # Bronze / Silver / Gold zones are stored as objects in MinIO buckets.
+  # - Port 9000  : S3 API (used by Spark via s3a:// protocol)
+  # - Port 9001  : Web console (browser UI to inspect buckets/objects)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: beacon-minio
+    ports:
+      - "9000:9000"   # S3 API (Spark reads/writes through this)
+      - "9001:9001"   # Web console (http://localhost:9001)
+    environment:
+      # Read from .env so credentials are not hardcoded in the repo
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-beacon}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-beacon12345}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - beacon-net
+
+  # ---------------------------------------------------------------------------
+  # minio-init — one-shot helper that creates the lakehouse buckets on startup.
+  # Uses the official MinIO client (mc) so no host SDK is required.
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest
+    container_name: beacon-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      echo "Creating MinIO buckets..."
+      mc alias set beacon http://minio:9000 $${MINIO_ACCESS_KEY} $${MINIO_SECRET_KEY}
+      mc mb -p beacon/beacon-raw beacon/beacon-curated beacon/beacon-gold
+      mc mb -p beacon/beacon-lakehouse
+      echo "Buckets ready."
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-beacon}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-beacon12345}
+    networks:
+      - beacon-net
+
+  # ---------------------------------------------------------------------------
+  # Postgres — serving layer. Holds the final Gold tables that a BI tool queries.
+  # The Gold schema is mounted as an init script, so it auto-creates on first boot.
+  # - Port 5432 : SQL access
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    container_name: beacon-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${PG_USER:-beacon}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-beacon}
+      POSTGRES_DB: ${PG_DB:-beacon}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./sql/gold_schema.sql:/docker-entrypoint-initdb.d/01_gold_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-beacon} -d ${PG_DB:-beacon}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - beacon-net
+
+  # ---------------------------------------------------------------------------
+  # Redpanda — Kafka-API-compatible streaming broker. Lighter than Kafka+Zookeeper.
+  # Used for the OPTIONAL real-time ingestion path (streaming_events.py).
+  # - Port 19092 : Kafka API (from your host)
+  # - Port 9644  : Admin API
+  # ---------------------------------------------------------------------------
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: beacon-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:19092
+    ports:
+      - "19092:19092"   # Kafka API, use this from your host machine
+      - "9644:9644"     # admin API
+    networks:
+      - beacon-net
+
+  # ---------------------------------------------------------------------------
+  # Redpanda Console — web UI to watch Kafka topics and messages.
+  # - Port 8080 : browser UI (http://localhost:8080)
+  # ---------------------------------------------------------------------------
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    container_name: beacon-redpanda-console
+    environment:
+      KAFKA_BROKERS: redpanda:29092
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redpanda
+    networks:
+      - beacon-net
+
+# ---------------------------------------------------------------------------
+# Named volumes (persist data across container restarts)
+# ---------------------------------------------------------------------------
+volumes:
+  minio_data:
+  pg_data:
+
+# ---------------------------------------------------------------------------
+# Explicit network so all services can find each other by name
+# (e.g. Spark-in-container reaches MinIO at http://minio:9000)
+# ---------------------------------------------------------------------------
+networks:
+  beacon-net:
+    driver: bridge

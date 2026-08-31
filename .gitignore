@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+data/bronze/*
+data/silver/*
+data/gold/*
+data/quarantine/*
+!data/bronze/.gitkeep
+!data/silver/.gitkeep
+!data/gold/.gitkeep
+!data/quarantine/.gitkeep
+.env
+*.crc
+_SUCCESS
+spark_jobs/scala/target/
+spark_jobs/scala/project/

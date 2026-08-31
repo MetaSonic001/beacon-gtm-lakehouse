@@ -1,0 +1,41 @@
+# ==============================================================================
+# Beacon GTM Lakehouse — Python dependencies
+# ==============================================================================
+# Install with:  pip install -r requirements.txt
+# This list covers everything the batch + streaming pipeline needs.
+# Spark itself (pyspark) is the big one — it bundles Py4J and the Spark runtime.
+# ==============================================================================
+
+# --- Core data processing ----------------------------------------------------
+pyspark==3.5.1            # PySpark: Apache Spark's Python API. Used by ALL batch
+                          # jobs (bronze→silver→gold) and Structured Streaming.
+faker==26.0.0             # Faker: generates realistic fake data (names, companies,
+                          # cities) for the synthetic data generators.
+pandas==2.2.2             # Pandas: data manipulation library. Used for small
+                          # datasets and quick analysis.
+
+# --- Database connectivity ---------------------------------------------------
+psycopg2-binary==2.9.9    # psycopg2: PostgreSQL adapter for Python. Used by the
+                          # Postgres init / verification scripts.
+# NOTE: The Spark JDBC writer uses the PostgreSQL JDBC driver (Java), fetched
+# via `spark-submit --packages org.postgresql:postgresql:42.7.3` — not psycopg2.
+
+# --- Streaming / messaging ---------------------------------------------------
+kafka-python-ng==2.2.2    # kafka-python-ng: actively-maintained fork of kafka-python
+                          # (which is unmaintained). Used by ingestion/kafka_producer.py
+                          # to send events to Redpanda (Kafka API).
+
+# --- Object storage (MinIO / S3) ---------------------------------------------
+minio==7.2.7              # MinIO Python client. Used to upload Bronze CSVs to the
+                          # MinIO data-lake buckets (scripts/upload_bronze.py).
+
+# --- Config / env ------------------------------------------------------------
+python-dotenv==1.0.1      # python-dotenv: loads .env files into os.environ so the
+                          # pipeline scripts read config from a single .env file.
+
+# --- Airflow (optional, for orchestration) ------------------------------------
+# Airflow is intentionally NOT pinned here — its dependency set conflicts with
+# a plain pip install alongside pyspark. Install it separately following the
+# official guide: https://airflow.apache.org/docs/apache-airflow/stable/installation/index.html
+# Easiest path: run Airflow via its official docker-compose and mount
+# this repo's airflow/dags/ folder into it.
