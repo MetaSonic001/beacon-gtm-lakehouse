@@ -56,11 +56,6 @@ streamlit run dashboard/app.py
 18. [Project Structure](#project-structure)
 19. [Troubleshooting](#troubleshooting)
 20. [Roadmap / Possible Extensions](#roadmap--possible-extensions)
-16. [Learning Path](#learning-path)
-17. [Project Structure](#project-structure)
-18. [Troubleshooting](#troubleshooting)
-19. [Roadmap / Possible Extensions](#roadmap--possible-extensions)
-
 ---
 
 ## Overview
@@ -603,8 +598,6 @@ This repo was built as a portfolio-grade data-engineering project, so the order 
 
 9. **Tune performance.** `benchmarks/join_benchmark.py` measures broadcast vs. sort-merge joins, AQE/skew handling, and partition pruning — turning "I know Spark" into "I measured Spark."
 
-Each step is incremental and independently demonstrable, which is exactly how to present it in an interview.
-
 ---
 
 ## Replicating This for Another Dataset
@@ -679,8 +672,6 @@ A sample run (~8,800 pipeline rows) prints a summary like:
 ====================================
 ```
 
-The interview-ready takeaway: *"I built a quarantine pattern rather than dropping bad rows — every rejected record keeps its failure reason, so you can debug upstream data issues instead of just seeing a lower row count."*
-
 ---
 
 ## Optional Advanced Topics
@@ -700,7 +691,7 @@ cd spark_jobs
 python streaming_events.py --brokers localhost:19092 --duration-seconds 30
 ```
 
-`kafka_producer.py` pushes realistic product/website events onto the `gtm-events` topic; `streaming_events.py` reads that topic and processes the stream with Spark Structured Streaming (watermark-based, deduplicated). This is a strong talking point for the *"batch vs. streaming — when would you use each?"* interview question.
+`kafka_producer.py` pushes realistic product/website events onto the `gtm-events` topic; `streaming_events.py` reads that topic and processes the stream with Spark Structured Streaming (watermark-based, deduplicated). 
 
 ### Airflow orchestration (`airflow/dags/gtm_pipeline_dag.py`)
 
@@ -725,8 +716,6 @@ A portfolio claim of *"I optimized a Spark job"* is far stronger with real numbe
 ```bash
 cd benchmarks && python join_benchmark.py --silver ../data/silver
 ```
-
-The lesson — **forcing a broadcast join on a small dimension table instead of a full shuffle** is one of the cheapest and most dramatic wins in Spark — is exactly the kind of thing to talk through in an interview.
 
 ---
 
@@ -784,8 +773,6 @@ The serving layer is deliberately decoupled so you can swap the consumer without
 ---
 
 ## Key Highlights
-
-These are the features that make this project stand out — the things to lead with in a portfolio or interview. (Each one is expanded in its own section above; this is the consolidated checklist.)
 
 1. **Real dataset, not synthetic.** Built on the actual Maven *CRM Sales Opportunities* data (86 companies, 7 products, 35 reps, ~8,800 deals) — no fake data in the pipeline.
 
