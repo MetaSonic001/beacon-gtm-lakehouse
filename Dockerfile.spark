@@ -1,0 +1,81 @@
+# ==============================================================================
+# Beacon GTM Lakehouse — Spark Container Image
+# ==============================================================================
+# Base: Apache Spark 3.5.1 with Hadoop 3 (official image, includes winutils natively)
+# Installs: Python deps (pyspark, pandas, minio, psycopg2, kafka-python-ng, python-dotenv)
+# Bakes in: Delta Lake, hadoop-aws, aws-java-sdk-bundle, PostgreSQL JDBC,
+#           spark-sql-kafka-0-10 JARs so spark-submit needs NO --packages at runtime.
+# ==============================================================================
+
+FROM apache/spark:3.5.1
+
+# Install Python dependencies. NOTE: the apache/spark:3.5.1 base image ships
+# Python 3.8 (Ubuntu 20.04). pandas is pinned to the newest release that still
+# supports Python 3.8 (pandas 2.2.x needs >=3.9, so we use 2.0.3 here). Only
+# pyspark, psycopg2-binary, minio, kafka-python-ng, and python-dotenv are
+# actually imported by the pipeline code — pandas is a convenience only.
+USER root
+# Create a `python` symlink so `docker compose run spark python ...` works
+# (the base image only ships `python3`).
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+RUN pip install --no-cache-dir \
+    pyspark==3.5.1 \
+    pandas==2.0.3 \
+    psycopg2-binary==2.9.9 \
+    kafka-python-ng==2.2.2 \
+    minio==7.2.7 \
+    python-dotenv==1.0.1
+
+# ==============================================================================
+# Bake all required JARs into $SPARK_HOME/jars so spark-submit works OFFLINE
+# (no network fetch needed at job submit time).
+# ==============================================================================
+
+# JAR versions pinned for Spark 3.5.1 + Hadoop 3.4 (the base image's Hadoop)
+ARG HADOOP_VERSION=3.4.1
+ARG AWS_SDK_VERSION=1.12.637
+ARG DELTA_VERSION=3.1.0
+ARG POSTGRES_JDBC_VERSION=42.7.3
+ARG KAFKA_VERSION=3.5.1
+ARG KAFKA_CLIENTS_VERSION=3.5.1
+
+# 1) Delta Lake (delta-spark_2.12:3.1.0)
+RUN wget -q -O $SPARK_HOME/jars/delta-spark_2.12-${DELTA_VERSION}.jar \
+    https://repo1.maven.org/maven2/io/delta/delta-spark_2.12/${DELTA_VERSION}/delta-spark_2.12-${DELTA_VERSION}.jar
+
+# 2) Hadoop-AWS (for S3A/MinIO) + AWS Java SDK bundle
+RUN wget -q -O $SPARK_HOME/jars/hadoop-aws-${HADOOP_VERSION}.jar \
+    https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_VERSION}/hadoop-aws-${HADOOP_VERSION}.jar && \
+    wget -q -O $SPARK_HOME/jars/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar \
+    https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar
+
+# 3) PostgreSQL JDBC driver
+RUN wget -q -O $SPARK_HOME/jars/postgresql-${POSTGRES_JDBC_VERSION}.jar \
+    https://repo1.maven.org/maven2/org/postgresql/postgresql/${POSTGRES_JDBC_VERSION}/postgresql-${POSTGRES_JDBC_VERSION}.jar
+
+# 4) Spark SQL Kafka connector (for streaming_events.py)
+RUN wget -q -O $SPARK_HOME/jars/spark-sql-kafka-0-10_2.12-${KAFKA_VERSION}.jar \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.12/${KAFKA_VERSION}/spark-sql-kafka-0-10_2.12-${KAFKA_VERSION}.jar
+
+# 5) Spark Token Provider Kafka (contains KafkaConfigUpdater, required by spark-sql-kafka-0-10)
+RUN wget -q -O $SPARK_HOME/jars/spark-token-provider-kafka-0-10_2.12-${KAFKA_VERSION}.jar \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.12/${KAFKA_VERSION}/spark-token-provider-kafka-0-10_2.12-${KAFKA_VERSION}.jar
+
+# 6) Kafka clients (ByteArraySerializer, etc. - required by spark-sql-kafka)
+RUN wget -q -O $SPARK_HOME/jars/kafka-clients-${KAFKA_CLIENTS_VERSION}.jar \
+    https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/${KAFKA_CLIENTS_VERSION}/kafka-clients-${KAFKA_CLIENTS_VERSION}.jar
+
+# ==============================================================================
+# Copy application code into the image (runs from /app)
+# ==============================================================================
+WORKDIR /app
+COPY spark_jobs/ spark_jobs/
+COPY ingestion/ ingestion/
+COPY scripts/ scripts/
+COPY sql/ sql/
+
+# ==============================================================================
+# Entry point: sleep infinity so `docker compose run --rm spark ...` works
+# ==============================================================================
+ENTRYPOINT ["sleep", "infinity"]

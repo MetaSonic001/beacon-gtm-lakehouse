@@ -8,10 +8,19 @@
 #   |  MinIO    |   | Postgres |   |  Redpanda (Kafka-API)                 |
 #   | (S3 lake) |   | (serving)|   | + Redpanda Console (topic UI)         |
 #   +-----------+   +----------+   +--------------------------------------+
+#   |   Spark   |   (spark-submit runs as a one-shot container)
+#   +-----------+
+#   |  Airflow  |   (webserver + scheduler + init, always-on)
+#   +-----------+
 #
-# Design note: Spark runs LOCALLY on your host (pip install pyspark), NOT in a
-# container. This keeps the batch jobs easy to debug while you build the
-# pipeline. Credentials here are read from your .env file (${VAR} syntax).
+# Design note: Spark runs as a CONTAINER built from Dockerfile.spark. This
+# sidesteps the significant pain of running Hadoop/Spark natively on Windows
+# (needs winutils etc.). You invoke jobs with:
+#     docker compose run --rm spark spark-submit [options] /app/spark_jobs/xxx.py
+# Airflow runs as a built image from Dockerfile.airflow with LocalExecutor
+# (no Celery/Redis needed at this scale). DAGs are volume-mounted from
+# ./airflow/dags so edits apply immediately.
+# Credentials here are read from your .env file (${VAR} syntax).
 # ==============================================================================
 
 services:
@@ -129,6 +138,179 @@ services:
       - "8080:8080"
     depends_on:
       - redpanda
+    networks:
+      - beacon-net
+
+  # ---------------------------------------------------------------------------
+  # Spark — batch processing engine. Runs as a "sleeping" container; you invoke
+  # spark-submit jobs with: docker compose run --rm spark <command>
+  # All JARs (Delta, S3A, Postgres JDBC, Kafka) are baked into the image.
+  # This avoids the native Hadoop/winutils and Windows pain entirely.
+  # ---------------------------------------------------------------------------
+  spark:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: beacon-spark
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-beacon}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-beacon12345}
+      PG_HOST: postgres      # reaches Postgres via its Docker service name
+      PG_PORT: "5432"
+      PG_DB: ${PG_DB:-beacon}
+      PG_USER: ${PG_USER:-beacon}
+      PG_PASSWORD: ${PG_PASSWORD:-beacon}
+      KAFKA_BROKERS: redpanda:29092  # internal broker address (not localhost!)
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-gtm-events}
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: ["sleep", "infinity"]   # keep alive so docker compose run works
+    entrypoint: []
+    # Bind the host ./data directory into the container at /app/data so that
+    # bronze/silver/gold Parquet written by one `docker compose run` survives
+    # into the next (one-off containers are ephemeral otherwise). This is the
+    # shared, persistent "local lake" the batch pipeline reads/writes.
+    #
+    # The Python source dirs are ALSO bind-mounted so code edits apply without
+    # a Docker rebuild (the image still bakes them in as a fallback). The
+    # baked JARs (Delta, S3A, JDBC, Kafka) live in the image, not in a mount,
+    # so spark-submit still works offline.
+    volumes:
+      - ./data:/app/data
+      - ./spark_jobs:/app/spark_jobs
+      - ./ingestion:/app/ingestion
+      - ./scripts:/app/scripts
+      - ./sql:/app/sql
+      - ./actual_maven_data:/app/actual_maven_data
+    networks:
+      - beacon-net
+
+  # ---------------------------------------------------------------------------
+  # Airflow — Orchestration (always-on). Uses LocalExecutor for simplicity.
+  # Webserver: http://localhost:8080
+  # Scheduler: runs DAGs on schedule
+  # Init: initializes DB + creates admin user on first run
+  # Triggerer: supports deferrable operators (future-proofing)
+  # ---------------------------------------------------------------------------
+  airflow-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: beacon-airflow-init
+    command: >
+      bash -c "
+      airflow db upgrade &&
+      airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true
+      "
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PG_USER:-beacon}:${PG_PASSWORD:-beacon}@postgres:5432/${PG_DB:-beacon}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-changeme}
+      PROJECT_ROOT: /opt/beacon
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./spark_jobs:/opt/airflow/spark_jobs
+      - ./data:/opt/airflow/data
+      - ./scripts:/opt/airflow/scripts
+      - ./sql:/opt/airflow/sql
+    networks:
+      - beacon-net
+
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: beacon-airflow-webserver
+    command: webserver
+    ports:
+      - "8081:8080"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PG_USER:-beacon}:${PG_PASSWORD:-beacon}@postgres:5432/${PG_DB:-beacon}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-changeme}
+      AIRFLOW__WEBSERVER__BASE_URL: http://localhost:8081
+      PROJECT_ROOT: /opt/beacon
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./spark_jobs:/opt/airflow/spark_jobs
+      - ./data:/opt/airflow/data
+      - ./scripts:/opt/airflow/scripts
+      - ./sql:/opt/airflow/sql
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - beacon-net
+
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: beacon-airflow-scheduler
+    command: scheduler
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PG_USER:-beacon}:${PG_PASSWORD:-beacon}@postgres:5432/${PG_DB:-beacon}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-changeme}
+      PROJECT_ROOT: /opt/beacon
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./spark_jobs:/opt/airflow/spark_jobs
+      - ./data:/opt/airflow/data
+      - ./scripts:/opt/airflow/scripts
+      - ./sql:/opt/airflow/sql
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - beacon-net
+
+  airflow-triggerer:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: beacon-airflow-triggerer
+    command: triggerer
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PG_USER:-beacon}:${PG_PASSWORD:-beacon}@postgres:5432/${PG_DB:-beacon}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-changeme}
+      PROJECT_ROOT: /opt/beacon
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./spark_jobs:/opt/airflow/spark_jobs
+      - ./data:/opt/airflow/data
+      - ./scripts:/opt/airflow/scripts
+      - ./sql:/opt/airflow/sql
     networks:
       - beacon-net
 

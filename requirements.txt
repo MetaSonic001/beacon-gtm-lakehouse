@@ -9,8 +9,6 @@
 # --- Core data processing ----------------------------------------------------
 pyspark==3.5.1            # PySpark: Apache Spark's Python API. Used by ALL batch
                           # jobs (bronze→silver→gold) and Structured Streaming.
-faker==26.0.0             # Faker: generates realistic fake data (names, companies,
-                          # cities) for the synthetic data generators.
 pandas==2.2.2             # Pandas: data manipulation library. Used for small
                           # datasets and quick analysis.
 
@@ -26,12 +24,19 @@ kafka-python-ng==2.2.2    # kafka-python-ng: actively-maintained fork of kafka-p
                           # to send events to Redpanda (Kafka API).
 
 # --- Object storage (MinIO / S3) ---------------------------------------------
-minio==7.2.7              # MinIO Python client. Used to upload Bronze CSVs to the
-                          # MinIO data-lake buckets (scripts/upload_bronze.py).
+minio==7.2.7              # MinIO Python client. Used by verification / upload
+                          # helpers that interact with the MinIO data-lake buckets.
 
 # --- Config / env ------------------------------------------------------------
 python-dotenv==1.0.1      # python-dotenv: loads .env files into os.environ so the
                           # pipeline scripts read config from a single .env file.
+
+# --- Dashboard (Streamlit + Plotly) ---------------------------------------
+streamlit>=1.38.0         # Streamlit: interactive web UI for the explanation/
+                          # results dashboard (dashboard/app.py).
+plotly>=5.24.0            # Plotly: interactive, theme-aware charts inside Streamlit.
+pyarrow>=15.0.0           # pyarrow: efficient Parquet reading/writing for both
+                          # PySpark (engine) and pandas/streamlit (dashboard).
 
 # --- Airflow (optional, for orchestration) ------------------------------------
 # Airflow is intentionally NOT pinned here — its dependency set conflicts with

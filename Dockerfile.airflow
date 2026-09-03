@@ -1,0 +1,27 @@
+# ==============================================================================
+# Beacon GTM Lakehouse — Airflow Image
+# ==============================================================================
+# Base: official Airflow 2.9.2 with Python 3.11
+# Installs project requirements so DAG tasks (bash operators calling
+# python/spark-submit) have the same deps available.
+# ==============================================================================
+
+FROM apache/airflow:2.9.2-python3.11
+
+# Switch to root for system package installs
+USER root
+
+# Install build tools for any compiled Python packages (e.g. psycopg2)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Switch back to airflow user
+USER airflow
+
+# Copy and install Python dependencies
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# The DAGs, spark_jobs, data, etc. are mounted via docker-compose volumes
+# so they stay in sync with the host repo. No COPY needed here.

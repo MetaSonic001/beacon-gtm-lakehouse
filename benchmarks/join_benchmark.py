@@ -1,26 +1,28 @@
 """
 Beacon GTM Lakehouse — Spark Optimization Benchmark
 ======================================================
-This is the "differentiator" script for the project: it runs the SAME
-join (fact_event x dim_customer) four different ways and times each,
-so you get real numbers for your README instead of made-up ones.
+Runs the SAME join four different ways and times each, so you get real
+numbers instead of made-up ones. It joins the real Silver fact table
+(`fact_opportunity`) against the small `dim_sales_team` dimension on the
+natural key `sales_agent` — exactly the join the pipeline itself performs.
 
 Experiments:
-    1. baseline        - default shuffle (sort-merge) join, no tuning
-    2. broadcast        - broadcast the small dimension table
-    3. skew_handling    - same join but with Adaptive Query Execution +
-                          skew join optimization turned on
-    4. partition_pruning - filter on a partitioned column (event_date)
-                          vs an unpartitioned scan, to show pushdown savings
+    1. baseline          - default shuffle (sort-merge) join, no tuning
+    2. broadcast          - broadcast the small dimension table
+    3. aqe_skew           - same join but with Adaptive Query Execution +
+                           skew join optimization turned on
+    4. partition_pruning  - filter on the partitioned columns (engage_year /
+                           engage_month) vs an unpartitioned scan, to show
+                           partition pruning savings
 
 Run (after bronze_to_silver.py has produced ../data/silver):
     python join_benchmark.py --silver ../data/silver
 
-Note: differences are most visible at higher --events counts when you
-regenerate data (10M+). At small dev scale, Spark's own AQE will often
-already pick the fast plan — which is itself worth noting in your writeup:
-"AQE auto-broadcast kicked in below X MB; I disabled it to show the
-uncoalesced behaviour for comparison."
+Note: this is a small (~6,000-row) teaching dataset, so absolute runtimes
+are tiny and the deltas are modest — the point is demonstrating the
+*mechanics* of each strategy. Differences become dramatic at real scale,
+where Spark's own AQE auto-broadcast threshold (default 10 MB) often already
+picks the fast plan; that auto-behaviour is worth noting in a writeup.
 """
 
 import argparse
@@ -52,22 +54,22 @@ def run(silver_path):
         "spark.sql.autoBroadcastJoinThreshold": "-1",  # force off auto-broadcast
         "spark.sql.adaptive.enabled": "false",
     })
-    events = spark.read.parquet(f"{silver_path}/fact_event")
-    customers = spark.read.parquet(f"{silver_path}/dim_customer")
+    facts = spark.read.parquet(f"{silver_path}/fact_opportunity")
+    teams = spark.read.parquet(f"{silver_path}/dim_sales_team")
 
     def baseline():
-        return events.join(customers, "customer_id").agg(F.count("*")).collect()
+        return facts.join(teams, "sales_agent").agg(F.count("*")).collect()
 
     results["baseline_sort_merge"] = timed("1. Baseline (sort-merge)", baseline)
     spark.stop()
 
     # ---------------- Experiment 2: broadcast join ----------------
     spark = build_spark(**{"spark.sql.adaptive.enabled": "false"})
-    events = spark.read.parquet(f"{silver_path}/fact_event")
-    customers = spark.read.parquet(f"{silver_path}/dim_customer")
+    facts = spark.read.parquet(f"{silver_path}/fact_opportunity")
+    teams = spark.read.parquet(f"{silver_path}/dim_sales_team")
 
     def broadcast_join():
-        return events.join(F.broadcast(customers), "customer_id").agg(F.count("*")).collect()
+        return facts.join(F.broadcast(teams), "sales_agent").agg(F.count("*")).collect()
 
     results["broadcast"] = timed("2. Broadcast join", broadcast_join)
     spark.stop()
@@ -78,27 +80,26 @@ def run(silver_path):
         "spark.sql.adaptive.skewJoin.enabled": "true",
         "spark.sql.autoBroadcastJoinThreshold": "-1",
     })
-    events = spark.read.parquet(f"{silver_path}/fact_event")
-    campaigns_dummy = spark.read.parquet(f"{silver_path}/dim_customer")
+    facts = spark.read.parquet(f"{silver_path}/fact_opportunity")
+    teams = spark.read.parquet(f"{silver_path}/dim_sales_team")
 
     def aqe_skew_join():
-        # join on campaign_id-equivalent skewed key (customer_id here as proxy;
-        # swap to campaign_id join against a small campaign-derived table for a
-        # sharper skew demo once you're at 10M+ rows)
-        return events.join(campaigns_dummy, "customer_id").agg(F.count("*")).collect()
+        return facts.join(teams, "sales_agent").agg(F.count("*")).collect()
 
     results["aqe_skew"] = timed("3. AQE + skew join", aqe_skew_join)
     spark.stop()
 
     # ---------------- Experiment 4: partition pruning ----------------
     spark = build_spark()
-    events = spark.read.parquet(f"{silver_path}/fact_event")
+    facts = spark.read.parquet(f"{silver_path}/fact_opportunity")
 
     def unpruned_scan():
-        return events.filter(F.col("event_type") == "opportunity_won").count()
+        return facts.filter(F.col("deal_stage") == "Won").count()
 
     def pruned_scan():
-        return events.filter((F.col("year") == 2025) & (F.col("month") == 6)).count()
+        return facts.filter(
+            (F.col("engage_year") == 2017) & (F.col("engage_month") == 3)
+        ).count()
 
     results["scan_no_partition_filter"] = timed("4a. Scan w/o partition filter", unpruned_scan)
     results["scan_with_partition_filter"] = timed("4b. Scan w/ partition filter (year/month)", pruned_scan)
@@ -109,11 +110,11 @@ def run(silver_path):
     for k, v in results.items():
         print(f"{k:<32}{v:>12.2f}")
     print("=======================================================\n")
-    print("Tips for a bigger, more dramatic delta:")
-    print("  - Regenerate data with --events 20000000 or higher")
-    print("  - Re-run this script and update the table above with real numbers")
-    print("  - Screenshot the Spark UI (localhost:4040) during each run for your")
-    print("    README: shuffle read/write, stage duration, spill (bytes)")
+    print("Notes:")
+    print("  - At this dataset's scale the deltas are small; the value is the")
+    print("    mechanism (plan + Spark UI), which you can screenshot.")
+    print("  - In real deployments, watch shuffle read/write, stage duration,")
+    print("    and spill (bytes) in the Spark UI (localhost:4040) per run.")
 
 
 if __name__ == "__main__":

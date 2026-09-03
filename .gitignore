@@ -1,16 +1,67 @@
-.venv/
+# =============================================================================
+# Beacon GTM Lakehouse — .gitignore
+#
+# A few notes on ordering (gitignore rules are order-sensitive):
+#   * A "negation" rule (!pattern) can only un-ignore something if its parent
+#     directory is NOT itself ignored. We ignore the *contents* of data
+#     subdirs (data/bronze/*) — NOT the directories — so the negations that
+#     keep each .gitkeep work.
+#   * Negations must come AFTER the pattern they override.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# IDE / editor files
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+*.log
+logs/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
 __pycache__/
 *.pyc
+.venv/
+venv/
+
+# ---------------------------------------------------------------------------
+# Spark artifacts (local metastore, warehouses, checkpoints)
+# ---------------------------------------------------------------------------
+spark-warehouse/
+metastore_db/
+derby.log
+.crc
+_SUCCESS
+
+# ---------------------------------------------------------------------------
+# Env / secrets
+# ---------------------------------------------------------------------------
+.env
+
+# ---------------------------------------------------------------------------
+# Generated data — ignore the data/output files, but KEEP the .gitkeep
+# placeholders so the folders exist when someone clones the repo.
+# ---------------------------------------------------------------------------
 data/bronze/*
 data/silver/*
 data/gold/*
 data/quarantine/*
+data/quality/*
 !data/bronze/.gitkeep
 !data/silver/.gitkeep
 !data/gold/.gitkeep
 !data/quarantine/.gitkeep
-.env
-*.crc
-_SUCCESS
-spark_jobs/scala/target/
-spark_jobs/scala/project/
+!data/quality/.gitkeep
+
+# ---------------------------------------------------------------------------
+# OS files
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
