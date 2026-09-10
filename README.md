@@ -600,46 +600,6 @@ This repo was built as a portfolio-grade data-engineering project, so the order 
 
 ---
 
-## Replicating This for Another Dataset
-
-The architecture is intentionally **dataset-agnostic**. To point this whole project at a different source dataset, follow this recipe:
-
-### 1. Drop in your raw files
-
-Put your source data (CSVs, JSON, etc.) under a new folder, e.g. `actual_<yourdata>/`. Keep it read-only.
-
-### 2. Write your own ingest script
-
-Create `scripts/ingest_<yourdata>.py` that copies your source to `data/bronze/<yourdata>/` with only **minimal normalization** (trim strings, cast numbers, parse dates). Preserve your dataset's natural keys.
-
-### 3. Rewrite `bronze_to_silver.py` for your schema
-
-This is the only job that's really dataset-specific. Change:
-- **`load_raw()`** — read your files/columns.
-- **`cast_types()`** — cast your columns to proper types.
-- **The validation rules** — null-key checks, referential integrity, range checks, date ordering, enum validity. Add/remove rules to fit your domain.
-- **The dimension/fact split** — decide which tables are dimensions and which is the fact.
-
-The **quarantine pattern and Parquet partitioning stay the same** — they're generic.
-
-### 4. Rewrite `silver_to_gold.py` for your business metrics
-
-Change the group-bys and aggregations to the metrics *your* business cares about (e.g. instead of deal funnel, maybe churn cohorts, order value, or engagement). The output pattern — small, denormalized, join-free Gold tables — is unchanged.
-
-### 5. Update `sql/gold_schema.sql` + `load_gold_to_postgres.py`
-
-Change the Gold table list and DDL to match your new metrics. The JDBC loading code is generic.
-
-### 6. Reuse everything else as-is
-
-The following need **no changes**: Docker Compose (infra), the Spark image, MinIO buckets, the Airflow DAG structure, the streaming producer/consumer (if your source has events), the dashboard scaffolding, and the quality-log persistence.
-
-### The general principle
-
-> **Bronze = copy exactly as-is. Silver = clean, validate, quarantine. Gold = pre-aggregate for the business. Serve = load into Postgres.** Only the "Silver" and "Gold" steps' *business rules* change between datasets; the *plumbing* (Spark, Parquet, MinIO, Postgres, Airflow, streaming, dashboard) is reusable.
-
----
-
 ## Data Quality & Quarantine
 
 Data quality is the stage most portfolio projects skip, which is precisely why this one makes it first-class.
@@ -738,7 +698,7 @@ psql -h localhost -U beacon -d beacon -f sql/analytics_queries.sql
 
 ---
 
-## BI Integration — Power BI & friends
+## BI Integration — Power BI & others
 
 The Gold tables are loaded into PostgreSQL exactly because that is the layer a BI tool is designed to query. Everything below applies to **Power BI**, **Tableau**, **Looker**, **Metabase**, **Grafana**, or any tool with a Postgres/JDBC/ODBC connector — the patterns are identical; only the "Get Data" menu differs.
 
@@ -793,25 +753,6 @@ The serving layer is deliberately decoupled so you can swap the consumer without
 9. **Measured Spark performance.** `benchmarks/join_benchmark.py` times broadcast vs. sort-merge joins, AQE/skew handling, and partition pruning — real numbers, not vibes.
 
 10. **Everything runs on a laptop, and results persist.** No cloud account needed; every output (Bronze/Silver/Gold Parquet, Postgres, quality log, run logs) survives across runs and is viewable via the Streamlit dashboard.
-
----
-
-## Learning Path
-
-This project is structured so you can learn data-engineering concepts incrementally — each stage builds on the previous one.
-
-| Stage | What you learn |
-|---|---|
-| **1. Data ingestion** | Using actual datasets; preserving natural keys; minimal normalization vs transformation. |
-| **2. Bronze → Silver** | Medallion layering; schema enforcement; deduplication with window functions; the quarantine pattern; partitioning and columnar storage (Parquet); joining on natural keys. |
-| **3. Silver → Gold** | Aggregation in Spark; designing analytics-ready, denormalized tables; the difference between "clean data" and "reporting tables". |
-| **4. Postgres serving layer** | JDBC connectivity; what a serving layer is; why BI tools query a warehouse rather than raw files. |
-| **5. SQL analytics** | Window functions, ratio calculations (`NULLIF`, `CASE`), cohorting / churn flags, and quality trend reporting. |
-| **6. Streaming (optional)** | Batch vs. streaming trade-offs; producers and consumer groups; Spark Structured Streaming, watermarks, and exactly-once concepts. |
-| **7. Orchestration (optional)** | Airflow DAGs; dependency graphs, retries with backoff, scheduling, idempotency. |
-| **8. Performance (optional)** | Join strategies (broadcast vs. sort-merge), adaptive query execution (AQE), skew handling, and partition pruning — with measured benchmarks. |
-
----
 
 ## Project Structure
 
@@ -904,7 +845,7 @@ The generator is seeded for reproducibility, but Spark's `row_number()` ordering
 
 ---
 
-## Roadmap / Possible Extensions
+## Possible Extensions
 
 - **Delta Lake** — drop `.parquet()` for `.format("delta")` to get ACID transactions, time travel, and upserts (great "v2" story).
 - **dbt** — move the Gold aggregation logic into versioned, tested SQL models.
